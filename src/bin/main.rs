@@ -46,10 +46,14 @@ async fn main(_spawner: Spawner) -> ! {
 
     let mut encoder_state = EncoderState {
         position: 0,
-        last_a: false,
-        last_b: false,
-        button_pressed: false,
-        button_press_time: 0,
+        position_ext: 0,
+        position_ext_prev: 0,
+        old_state: 0,
+    };
+
+    let mut button_state = ButtonState {
+        pressed: false,
+        press_time: 0,
     };
 
     let mut encoder = init_encoder(
@@ -113,7 +117,7 @@ async fn main(_spawner: Spawner) -> ! {
     rprintln!("Starting UI loop...");
 
     loop {
-        let event = update_encoder(&mut encoder, &mut encoder_state);
+        let event = update_encoder(&mut encoder, &mut encoder_state, &mut button_state);
 
         if event == EncoderEvent::Clockwise || event == EncoderEvent::CounterClockwise {
             app.handle_event(event);
@@ -125,12 +129,20 @@ async fn main(_spawner: Spawner) -> ! {
     }
 }
 
+use embassy_time::Instant;
+
+const KNOBDIR: [i8; 16] = [0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0];
+
 struct EncoderState {
     position: i32,
-    last_a: bool,
-    last_b: bool,
-    button_pressed: bool,
-    button_press_time: u64,
+    position_ext: i32,
+    position_ext_prev: i32,
+    old_state: u8,
+}
+
+struct ButtonState {
+    pressed: bool,
+    press_time: u64,
 }
 
 struct Encoder<'a> {
@@ -171,40 +183,56 @@ enum EncoderEvent {
     LongPress,
 }
 
-fn update_encoder(encoder: &mut Encoder, state: &mut EncoderState) -> EncoderEvent {
-    use embassy_time::Instant;
+fn update_encoder(
+    encoder: &mut Encoder,
+    state: &mut EncoderState,
+    button_state: &mut ButtonState,
+) -> EncoderEvent {
+    let sig1 = if encoder.pin_a.is_high() { 1u8 } else { 0u8 };
+    let sig2 = if encoder.pin_b.is_high() { 1u8 } else { 0u8 };
 
-    let a = encoder.pin_a.is_high();
-    let b = encoder.pin_b.is_high();
+    let this_state = sig1 | (sig2 << 1);
+	rprintln!("Encoder state: sig1={}, sig2={}, this_state={}", sig1, sig2, this_state);
+    // 只有状态变化时才更新
+    if state.old_state != this_state {
+        let index = this_state | (state.old_state << 2);
+        let delta = KNOBDIR[index as usize];
 
-    if a != state.last_a || b != state.last_b {
-        state.last_a = a;
-        state.last_b = b;
+        state.position += delta as i32;
+        state.old_state = this_state;
 
-        if !a && b {
-            state.position += 1;
-            return EncoderEvent::Clockwise;
-        } else if a && !b {
-            state.position -= 1;
-            return EncoderEvent::CounterClockwise;
+        // LatchMode::FOUR0: 在状态0时更新外部位置并检测旋转事件
+        if this_state == 3 {
+            let _prev_ext = state.position_ext;
+            state.position_ext = state.position >> 2;
+            
+            // 检测旋转方向
+            if state.position_ext > state.position_ext_prev {
+                state.position_ext_prev = state.position_ext;
+                return EncoderEvent::Clockwise;
+            } else if state.position_ext < state.position_ext_prev {
+                state.position_ext_prev = state.position_ext;
+                return EncoderEvent::CounterClockwise;
+            }
         }
     }
 
+    // 按钮事件处理
     if encoder.pin_button.is_low() {
-        if !state.button_pressed {
-            state.button_pressed = true;
-            state.button_press_time = Instant::now().elapsed().as_micros() as u64;
+        if !button_state.pressed {
+            button_state.pressed = true;
+            button_state.press_time = Instant::now().elapsed().as_micros() as u64;
             return EncoderEvent::ButtonPressed;
+        } else {
+            let elapsed = (Instant::now().elapsed().as_micros() as u64)
+                .saturating_sub(button_state.press_time);
+            if elapsed >= 2_000_000 {
+                button_state.press_time = 0;
+                return EncoderEvent::LongPress;
+            }
         }
-
-        let elapsed = (Instant::now().elapsed().as_micros() as u64)
-            .saturating_sub(state.button_press_time);
-        if elapsed >= 2_000_000 {
-            state.button_press_time = 0;
-            return EncoderEvent::LongPress;
-        }
-    } else if state.button_pressed {
-        state.button_pressed = false;
+    } else if button_state.pressed {
+        button_state.pressed = false;
         return EncoderEvent::ButtonReleased;
     }
 
@@ -227,13 +255,13 @@ impl App {
     fn handle_event(&mut self, event: EncoderEvent) {
         match event {
             EncoderEvent::Clockwise => {
-                if self.selected > 0 {
-                    self.selected -= 1;
+                if self.selected < self.menu_items.len() - 1 {
+                    self.selected += 1;
                 }
             }
             EncoderEvent::CounterClockwise => {
-                if self.selected < self.menu_items.len() - 1 {
-                    self.selected += 1;
+                if self.selected > 0 {
+                    self.selected -= 1;
                 }
             }
             _ => {}
