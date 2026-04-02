@@ -1,6 +1,13 @@
 [target.xtensa-esp32s3-none-elf]
 runner = "probe-rs run --chip=esp32s3 --preverify --always-print-stacktrace --no-location --catch-hardfault"
 
+# [esp]
+# chip = "esp32s3"
+# flash_mode = "dio"       # 关键：必须是 dio
+# flash_size = "16MB"      # 关键：16MB
+# psram_enable = true      # 必须开启
+
+
 [env]
 
 [build]
