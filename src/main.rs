@@ -53,6 +53,7 @@ async fn main(spawner: Spawner) -> ! {
         peripherals.GPIO4.degrade(),
         peripherals.GPIO5.degrade(),
         peripherals.GPIO0.degrade(),
+        peripherals.GPIO6.degrade(),
     );
 
     // 启动编码器任务
