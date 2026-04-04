@@ -1,0 +1,149 @@
+use embassy_futures::select::{select3, Either3};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
+use embassy_time::Instant;
+use esp_hal::gpio::{Event, Input, InputConfig, Pull};
+use rtt_target::rprintln;
+
+// 全局通道用于传递编码器事件
+pub static ENCODER_CHANNEL: Channel<CriticalSectionRawMutex, EncoderEvent, 8> = Channel::new();
+
+const KNOBDIR: [i8; 16] = [0, -1, 1, 0, 1, 0, 0, -1, -1, 0, 0, 1, 0, 1, -1, 0];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EncoderEvent {
+    Clockwise,
+    CounterClockwise,
+    ButtonPressed,
+    ButtonReleased,
+    LongPress,
+}
+
+struct EncoderState {
+    position: i32,
+    position_ext: i32,
+    position_ext_prev: i32,
+    old_state: u8,
+}
+
+struct ButtonState {
+    pressed: bool,
+    press_time: u64,
+}
+
+pub struct Encoder<'a> {
+    pin_a: Input<'a>,
+    pin_b: Input<'a>,
+    pin_button: Input<'a>,
+}
+
+pub fn init_encoder<'a>(
+    pin_a: esp_hal::gpio::AnyPin<'a>,
+    pin_b: esp_hal::gpio::AnyPin<'a>,
+    pin_button: esp_hal::gpio::AnyPin<'a>,
+) -> Encoder<'a> {
+    let config = InputConfig::default().with_pull(Pull::Up);
+
+    let mut pin_a = Input::new(pin_a, config.clone());
+    let mut pin_b = Input::new(pin_b, config.clone());
+    let mut pin_button = Input::new(pin_button, config);
+
+    pin_a.listen(Event::AnyEdge);
+    pin_b.listen(Event::AnyEdge);
+    pin_button.listen(Event::FallingEdge);
+
+    Encoder {
+        pin_a,
+        pin_b,
+        pin_button,
+    }
+}
+
+#[embassy_executor::task]
+pub async fn encoder_task(mut encoder: Encoder<'static>) {
+    let mut state = EncoderState {
+        position: 0,
+        position_ext: 0,
+        position_ext_prev: 0,
+        old_state: 0,
+    };
+
+    let mut button_state = ButtonState {
+        pressed: false,
+        press_time: 0,
+    };
+
+    rprintln!("Encoder task started");
+
+    loop {
+        // 等待 A、B 或按钮的边沿触发
+        let result = select3(
+            encoder.pin_a.wait_for_any_edge(),
+            encoder.pin_b.wait_for_any_edge(),
+            encoder.pin_button.wait_for_falling_edge(),
+        )
+        .await;
+
+        match result {
+            Either3::First(_) | Either3::Second(_) => {
+                // A 或 B 引脚有变化，处理旋转
+                let sig1 = if encoder.pin_a.is_high() { 1u8 } else { 0u8 };
+                let sig2 = if encoder.pin_b.is_high() { 1u8 } else { 0u8 };
+
+                let this_state = sig1 | (sig2 << 1);
+
+                // 只有状态变化时才更新
+                if state.old_state != this_state {
+                    let index = this_state | (state.old_state << 2);
+                    let delta = KNOBDIR[index as usize];
+
+                    state.position += delta as i32;
+                    state.old_state = this_state;
+
+                    // LatchMode::FOUR0: 在状态0时更新外部位置并检测旋转事件
+                    if this_state == 3 {
+                        state.position_ext = state.position >> 2;
+
+                        // 检测旋转方向
+                        if state.position_ext > state.position_ext_prev {
+                            state.position_ext_prev = state.position_ext;
+                            rprintln!("Clockwise");
+                            ENCODER_CHANNEL.send(EncoderEvent::Clockwise).await;
+                        } else if state.position_ext < state.position_ext_prev {
+                            state.position_ext_prev = state.position_ext;
+                            rprintln!("CounterClockwise");
+                            ENCODER_CHANNEL.send(EncoderEvent::CounterClockwise).await;
+                        }
+                    }
+                }
+            }
+            Either3::Third(_) => {
+                // 按钮被按下
+                if !button_state.pressed {
+                    button_state.pressed = true;
+                    button_state.press_time = Instant::now().as_micros() as u64;
+                    rprintln!("Button pressed");
+                    ENCODER_CHANNEL.send(EncoderEvent::ButtonPressed).await;
+                }
+            }
+        }
+
+        // 检查按钮长按（需要定期检测，使用短超时）
+        if button_state.pressed {
+            let elapsed = (Instant::now().as_micros() as u64)
+                .saturating_sub(button_state.press_time);
+            if elapsed >= 2_000_000 {
+                button_state.press_time = 0;
+                rprintln!("Long press");
+                ENCODER_CHANNEL.send(EncoderEvent::LongPress).await;
+            }
+        }
+
+        // 检查按钮释放（需要轮询检测）
+        if button_state.pressed && encoder.pin_button.is_high() {
+            button_state.pressed = false;
+            rprintln!("Button released");
+            ENCODER_CHANNEL.send(EncoderEvent::ButtonReleased).await;
+        }
+    }
+}
