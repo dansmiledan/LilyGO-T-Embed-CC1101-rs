@@ -119,11 +119,11 @@ pub async fn encoder_task(mut encoder: Encoder<'static>) {
                         if state.position_ext > state.position_ext_prev {
                             state.position_ext_prev = state.position_ext;
                             rprintln!("Clockwise");
-                            ENCODER_CHANNEL.send(EncoderEvent::Clockwise).await;
+                            ENCODER_CHANNEL.send(EncoderEvent::CounterClockwise).await;
                         } else if state.position_ext < state.position_ext_prev {
                             state.position_ext_prev = state.position_ext;
                             rprintln!("CounterClockwise");
-                            ENCODER_CHANNEL.send(EncoderEvent::CounterClockwise).await;
+                            ENCODER_CHANNEL.send(EncoderEvent::Clockwise).await;
                         }
                     }
                 }
