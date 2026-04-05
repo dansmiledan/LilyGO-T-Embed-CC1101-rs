@@ -5,6 +5,42 @@ use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, BorderType, Clear, Gauge, List, ListItem, Paragraph};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuItem {
+    Wifi,
+    Bluetooth,
+    RfidNfc,
+    SubGhz,
+    IrRemote,
+    Settings,
+}
+
+impl MenuItem {
+    pub const ALL: &'static [MenuItem] = &[
+        MenuItem::Wifi,
+        MenuItem::Bluetooth,
+        MenuItem::RfidNfc,
+        MenuItem::SubGhz,
+        MenuItem::IrRemote,
+        MenuItem::Settings,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            MenuItem::Wifi => "Wi-Fi",
+            MenuItem::Bluetooth => "Bluetooth",
+            MenuItem::RfidNfc => "RFID/NFC",
+            MenuItem::SubGhz => "Sub-GHz",
+            MenuItem::IrRemote => "IR Remote",
+            MenuItem::Settings => "Settings",
+        }
+    }
+
+    pub fn is_settings(self) -> bool {
+        matches!(self, MenuItem::Settings)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AppState {
     Menu,
     BrightnessPopup,
@@ -13,7 +49,7 @@ pub enum AppState {
 pub struct App {
     state: AppState,
     selected: usize,
-    menu_items: &'static [&'static str],
+    menu_items: &'static [MenuItem],
     brightness: u8,
 }
 
@@ -22,7 +58,7 @@ impl App {
         Self {
             state: AppState::Menu,
             selected: 0,
-            menu_items: &["Wi-Fi", "Bluetooth", "RFID/NFC", "Sub-GHz", "IR Remote", "GPS", "Settings"],
+            menu_items: MenuItem::ALL,
             brightness: 16,
         }
     }
@@ -43,8 +79,10 @@ impl App {
                     }
                     EncoderEvent::ConfirmReleased => {
                         // 如果选中 Settings，弹出亮度调节窗口
-                        if self.selected == 6 {
-                            self.state = AppState::BrightnessPopup;
+                        if let Some(item) = self.menu_items.get(self.selected) {
+                            if item.is_settings() {
+                                self.state = AppState::BrightnessPopup;
+                            }
                         }
                     }
                     _ => {}
@@ -65,12 +103,18 @@ impl App {
                     EncoderEvent::ConfirmReleased => {
                         // 在弹窗状态下，确认键释放时关闭 pop-up，避免按下和释放事件跨状态重入
                         self.state = AppState::Menu;
-                        self.selected = 6;
+                        self.selected = self.menu_items
+                            .iter()
+                            .position(|item| item.is_settings())
+                            .unwrap_or(self.selected);
                     }
                     EncoderEvent::BackPressed => {
                         // 返回菜单
                         self.state = AppState::Menu;
-                        self.selected = 6;
+                        self.selected = self.menu_items
+                            .iter()
+                            .position(|item| item.is_settings())
+                            .unwrap_or(self.selected);
                     }
                     _ => {}
                 }
@@ -119,7 +163,7 @@ impl App {
                 } else {
                     Style::default().fg(Color::White)
                 };
-                ListItem::new(*item).style(style)
+                ListItem::new(item.label()).style(style)
             })
             .collect();
 
