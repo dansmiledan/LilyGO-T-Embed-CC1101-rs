@@ -37,8 +37,8 @@ mousefood = { version = "0.4", default-features = false, features = ["fonts"] }
 ratatui = { version = "0.30", default-features = false }
 
 # BLE HID dependencies
-trouble-host = { version = "0.5", features = ["derive", "gatt"] }
-bt-hci = "0.6"
+trouble-host = { version = "0.6.0", features = ["derive", "gatt"] }
+bt-hci = "0.8.0"
 
 
 [profile.dev]
