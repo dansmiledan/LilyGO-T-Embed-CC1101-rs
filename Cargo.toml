@@ -6,22 +6,21 @@ version      = "0.1.0"
 
 
 [dependencies]
-esp-hal = { version = "~1.0", features = ["esp32s3", "unstable", "psram"] }
+esp-hal = { path = "../../esp-hal", features = ["esp32s3", "unstable", "psram"] }
 
-esp-rtos = { version = "0.2.0", features = [
+esp-rtos = { path = "../../esp-rtos", features = [
   "embassy",
   "esp-alloc",
   "esp32s3",
   "esp-radio",
 ] }
 
-esp-bootloader-esp-idf = { version = "0.4.0", features = ["esp32s3"] }
+esp-bootloader-esp-idf = { path = "../../esp-bootloader-esp-idf", features = ["esp32s3"] }
 
-esp-alloc = "0.9.0"
-esp-radio = { version = "0.17", features = ["ble", "esp32s3", "unstable"] }
-esp-radio-rtos-driver = "0.2"
+esp-alloc = { version = "0.9.0", features = ["esp32s3"] }
+esp-radio = { path = "../../esp-radio", features = ["ble", "esp32s3", "unstable"] }
 rtt-target = "0.6.2"
-embassy-executor = { version = "0.9.1", features = [] }
+embassy-executor = { version = "0.10.0", features = [] }
 embassy-time = "0.5.0"
 
 critical-section = "1.2.0"
@@ -30,14 +29,18 @@ embassy-futures = "0.1"
 embassy-sync     = "0.7"
 
 display-interface-spi = "0.5"
-mipidsi = { version = "0.8", default-features = false, features = ["batch"] }
+mipidsi = { version = "0.8.0", default-features = false, features = ["batch"] }
 embedded-graphics = "0.8"
 embedded-hal-bus = "0.3"
-mousefood = { version = "0.4", default-features = false, features = ["fonts"] }
+mousefood = { version = "0.4.0", default-features = false, features = ["fonts"] }
 ratatui = { version = "0.30", default-features = false }
 
 # BLE HID dependencies
-trouble-host = { version = "0.6.0", features = ["derive", "gatt"] }
+trouble-host = { version = "0.6.0", features = [
+      "default-packet-pool-mtu-255",
+    "derive",
+    "scan",
+] }
 bt-hci = "0.8.0"
 
 

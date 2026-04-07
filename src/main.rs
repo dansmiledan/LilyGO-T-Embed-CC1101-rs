@@ -26,7 +26,7 @@ use rtt_target::rprintln;
 
 use input::{init_encoder, encoder_task, ENCODER_CHANNEL, EncoderEvent};
 use ui::App;
-use ble_hid::{ble_hid_task, BleKeyEvent, BLE_KEY_CHANNEL};
+use ble_hid::{BleKeyEvent, BLE_KEY_CHANNEL};
 
 #[panic_handler]
 fn panic(p: &core::panic::PanicInfo) -> ! {
@@ -67,7 +67,8 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0);
+    let sw_int = esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
 
     rprintln!("T-Embed CC1101 UI Starting...");
 
@@ -80,28 +81,28 @@ async fn main(spawner: Spawner) -> ! {
     );
 
     // 启动编码器任务
-    spawner.spawn(encoder_task(encoder)).unwrap();
+    spawner.spawn(encoder_task(encoder).unwrap());
 
-    // 初始化 BLE 无线电
-    rprintln!("初始化 BLE 无线电...");
-    let radio_init = match esp_radio::init() {
-        Ok(init) => {
-            rprintln!("BLE 无线电初始化成功");
-            init
-        }
-        Err(e) => {
-            rprintln!("BLE 无线电初始化失败: {:?}", e);
-            panic!("BLE 初始化失败");
-        }
-    };
+    // // 初始化 BLE 无线电
+    // rprintln!("初始化 BLE 无线电...");
+    // let radio_init = match esp_radio::init() {
+    //     Ok(init) => {
+    //         rprintln!("BLE 无线电初始化成功");
+    //         init
+    //     }
+    //     Err(e) => {
+    //         rprintln!("BLE 无线电初始化失败: {:?}", e);
+    //         panic!("BLE 初始化失败");
+    //     }
+    // };
 
     // 使用 StaticCell 来创建静态引用
-    use static_cell::StaticCell;
-    static RADIO_INIT: StaticCell<esp_radio::Controller> = StaticCell::new();
-    let radio_init_static = RADIO_INIT.init(radio_init);
+    // use static_cell::StaticCell;
+    // static RADIO_INIT: StaticCell<esp_radio::Controller> = StaticCell::new();
+    // let radio_init_static = RADIO_INIT.init(radio_init);
     
     // 启动 BLE HID 任务
-    spawner.spawn(ble_hid_task(radio_init_static, peripherals.BT)).unwrap();
+    // spawner.spawn(ble_hid_task(radio_init_static, peripherals.BT)).unwrap();
     rprintln!("BLE HID 任务已启动");
 
     let spi_config = SpiConfig::default()
