@@ -20,6 +20,8 @@ use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::spi::Mode as SpiMode;
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
+use esp_radio::ble::controller::BleConnector;
+use trouble_host::prelude::ExternalController;
 use mousefood::{EmbeddedBackend, EmbeddedBackendConfig};
 use ratatui::Terminal;
 use rtt_target::rprintln;
@@ -83,27 +85,10 @@ async fn main(spawner: Spawner) -> ! {
     // 启动编码器任务
     spawner.spawn(encoder_task(encoder).unwrap());
 
-    // // 初始化 BLE 无线电
-    // rprintln!("初始化 BLE 无线电...");
-    // let radio_init = match esp_radio::init() {
-    //     Ok(init) => {
-    //         rprintln!("BLE 无线电初始化成功");
-    //         init
-    //     }
-    //     Err(e) => {
-    //         rprintln!("BLE 无线电初始化失败: {:?}", e);
-    //         panic!("BLE 初始化失败");
-    //     }
-    // };
+    // 启动 BLE 键盘监听任务
+    let bluetooth = peripherals.BT;
+    spawner.spawn(ble_hid::run_ble_keyboard(bluetooth).unwrap());
 
-    // 使用 StaticCell 来创建静态引用
-    // use static_cell::StaticCell;
-    // static RADIO_INIT: StaticCell<esp_radio::Controller> = StaticCell::new();
-    // let radio_init_static = RADIO_INIT.init(radio_init);
-    
-    // 启动 BLE HID 任务
-    // spawner.spawn(ble_hid_task(radio_init_static, peripherals.BT)).unwrap();
-    rprintln!("BLE HID 任务已启动");
 
     let spi_config = SpiConfig::default()
         .with_frequency(Rate::from_mhz(80))
@@ -217,3 +202,30 @@ async fn main(spawner: Spawner) -> ! {
         terminal.draw(|frame| app.render(frame)).unwrap();
     }
 }
+
+// BLE 键盘监听任务 - 简化版本，用于接收和处理键盘事件
+// #[embassy_executor::task]
+// async fn ble_keyboard_listener() {
+//     rprintln!("🎧 BLE 键盘监听任务已启动");
+//     let mut counter = 0u32;
+    
+//     loop {
+//         // 监听 BLE_KEY_CHANNEL 中的事件
+//         match embassy_time::with_timeout(
+//             embassy_time::Duration::from_millis(1000),
+//             BLE_KEY_CHANNEL.receive()
+//         ).await {
+//             Ok(event) => {
+//                 counter += 1;
+//                 let key_name = match event {
+//                     BleKeyEvent::Up => "↑ UP (0x52)",
+//                     BleKeyEvent::Down => "↓ DOWN (0x51)",
+//                 };
+//                 rprintln!("[{}] 🔑 BLE 键盘事件: {}", counter, key_name);
+//             }
+//             Err(_) => {
+//                 // 超时，继续等待
+//             }
+//         }
+//     }
+// }

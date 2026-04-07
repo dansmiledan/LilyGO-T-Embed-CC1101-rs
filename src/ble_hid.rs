@@ -1,13 +1,14 @@
-// //! BLE HID 键盘模块
-// //! 
-// //! 使用 trouble-host 库实现真实的 BLE HID 键盘功能
+//! BLE HID 键盘模块
+//! 
+//! 使用 trouble-host 库实现真实的 BLE HID 键盘功能
 
+use bt_hci::controller::Controller;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-// use rtt_target::rprintln;
-// use bt_hci::controller::ExternalController;
-// use esp_radio::ble::controller::BleConnector;
-// use trouble_host::prelude::*;
+use embassy_futures::{join::join, select::select};
+use rtt_target::rprintln;
+use esp_radio::ble::controller::BleConnector;
+use trouble_host::prelude::*;
 
 /// HID 键盘事件
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,179 +20,230 @@ pub enum BleKeyEvent {
 /// BLE 键盘事件通道
 pub static BLE_KEY_CHANNEL: Channel<CriticalSectionRawMutex, BleKeyEvent, 8> = Channel::new();
 
-// /// USB HID 键盘键码
-// pub mod key_codes {
-//     pub const KEY_UP: u8 = 0x52;    // 上箭头
-//     pub const KEY_DOWN: u8 = 0x51;  // 下箭头
-// }
+/// USB HID 键盘键码
+pub mod key_codes {
+    pub const KEY_UP: u8 = 0x52;    // 上箭头
+    pub const KEY_DOWN: u8 = 0x51;  // 下箭头
+}
 
-// /// 键盘输入报告（8 字节标准 HID 格式）
-// #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// pub struct KeyboardReport {
-//     pub modifier: u8,
-//     pub reserved: u8,
-//     pub keys: [u8; 6],
-// }
+/// 键盘输入报告（8 字节标准 HID 格式）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyboardReport {
+    pub modifier: u8,
+    pub reserved: u8,
+    pub keys: [u8; 6],
+}
 
-// impl KeyboardReport {
-//     pub const EMPTY: Self = Self {
-//         modifier: 0,
-//         reserved: 0,
-//         keys: [0; 6],
-//     };
+impl KeyboardReport {
+    pub const EMPTY: Self = Self {
+        modifier: 0,
+        reserved: 0,
+        keys: [0; 6],
+    };
 
-//     pub fn with_key(key: u8) -> Self {
-//         let mut report = Self::EMPTY;
-//         report.keys[0] = key;
-//         report
-//     }
+    pub fn with_key(key: u8) -> Self {
+        let mut report = Self::EMPTY;
+        report.keys[0] = key;
+        report
+    }
 
-//     pub fn to_bytes(&self) -> [u8; 8] {
-//         [
-//             self.modifier,
-//             self.reserved,
-//             self.keys[0],
-//             self.keys[1],
-//             self.keys[2],
-//             self.keys[3],
-//             self.keys[4],
-//             self.keys[5],
-//         ]
-//     }
-// }
+    pub fn to_bytes(&self) -> [u8; 8] {
+        [
+            self.modifier,
+            self.reserved,
+            self.keys[0],
+            self.keys[1],
+            self.keys[2],
+            self.keys[3],
+            self.keys[4],
+            self.keys[5],
+        ]
+    }
+}
 
-// /// HID 报告描述符（标准键盘）
-// pub const HID_REPORT_MAP: &[u8] = &[
-//     0x05, 0x01, // Usage Page (Generic Desktop Ctrls)
-//     0x09, 0x06, // Usage (Keyboard)
-//     0xA1, 0x01, // Collection (Application)
+/// GATT 服务器定义 - HID 键盘
+#[gatt_server]
+struct Server {
+    hid_service: HidService,
+}
+
+/// HID 服务 (UUID 0x180A)
+#[gatt_service(uuid = "180A")]
+struct HidService {
+    /// HID 输入报告 (UUID 0x2A4D) - 8 字节键盘报告
+    #[characteristic(uuid = "2A4D", read, write_without_response, notify)]
+    input_report: [u8; 8],
+}
+
+/// BLE 主控制器初始化和运行
+#[embassy_executor::task]
+pub async fn run_ble_keyboard(bluetooth:esp_hal::peripherals::BT<'static> ) {
+    rprintln!("🔌 启动 BLE 键盘服务...");
     
-//     // Modifier 字节（8 位）
-//     0x05, 0x07, // Usage Page (Kbrd/Keypad)
-//     0x19, 0xE0, // Usage Minimum (Left Control)
-//     0x29, 0xE7, // Usage Maximum (Right GUI)
-//     0x15, 0x00, // Logical Minimum (0)
-//     0x25, 0x01, // Logical Maximum (1)
-//     0x75, 0x01, // Report Size (1 bit)
-//     0x95, 0x08, // Report Count (8 bits)
-//     0x81, 0x02, // Input (Data, Var, Abs)
-    
-//     // Reserved 字节（8 位）
-//     0x95, 0x01, // Report Count (1)
-//     0x75, 0x08, // Report Size (8)
-//     0x81, 0x01, // Input (Cnst, Var, Abs)
-    
-//     // 按键码（最多 6 个同时按键）
-//     0x95, 0x06, // Report Count (6)
-//     0x75, 0x08, // Report Size (8)
-//     0x15, 0x00, // Logical Minimum (0)
-//     0x25, 0xE7, // Logical Maximum (231)
-//     0x05, 0x07, // Usage Page (Kbrd/Keypad)
-//     0x19, 0x00, // Usage Minimum (0)
-//     0x29, 0xE7, // Usage Maximum (231)
-//     0x81, 0x00, // Input (Data, Array, Abs)
-    
-//     0xC0        // End Collection
-// ];
+    let address: Address = Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]);
+    rprintln!("📍 BLE 地址: {:?}", address);
 
-// /// HID Information 特征值
-// pub const HID_INFO: &[u8] = &[
-//     0x01, 0x01, // bcdHID = 1.01
-//     0x00,       // bCountryCode (Not localized)
-//     0x02        // Flags (Normally Connectable)
-// ];
+    let connector = BleConnector::new(bluetooth, Default::default()).unwrap();
+    let controller: ExternalController<_, 1> = ExternalController::new(connector);
+    let mut resources: HostResources<DefaultPacketPool, 1, 2> = HostResources::new();
+    let stack = trouble_host::new(controller, &mut resources).set_random_address(address);
+    let Host {
+        mut peripheral,
+        runner,
+        ..
+    } = stack.build();
 
-// /// BLE HID 键盘任务 - 实现真实的 HID 服务器
-// #[embassy_executor::task]
-// pub async fn ble_hid_task(
-//     radio: &'static esp_radio::Radio<'static>,
-//     bt: esp_hal::peripherals::BT<'static>,
-// ) {
-//     rprintln!("═══════════════════════════════════");
-//     rprintln!("BLE HID 键盘任务启动...");
-//     rprintln!("═══════════════════════════════════");
+    rprintln!("✓ BLE 主机已创建");
 
-//     // 初始化 BLE 连接器
-//     let config = esp_radio::ble::Config::default();
-//     let transport = match BleConnector::new(radio, bt, config) {
-//         Ok(t) => t,
-//         Err(e) => {
-//             rprintln!("❌ BLE 连接器创建失败: {:?}", e);
-//             return;
-//         }
-//     };
+    let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
+        name: "T-Embed-KB",
+        appearance: &appearance::power_device::GENERIC_POWER_DEVICE,
+    }))
+    .unwrap();
 
-//     rprintln!("✓ BLE 连接器已创建");
+    let _ = join(ble_task(runner), async {
+        loop {
+            match advertise("T-Embed-KB", &mut peripheral, &server).await {
+                Ok(conn) => {
+                    rprintln!("✅ 客户端已连接");
+                    let gatt = gatt_events_task(&server, &conn);
+                    let keyboard = keyboard_task(&server, &conn);
+                    select(gatt, keyboard).await;
+                    rprintln!("↻ 等待新连接...");
+                }
+                Err(e) => {
+                    rprintln!("❌ 广告错误: {:?}", e);
+                }
+            }
+        }
+    })
+    .await;
+}
 
-//     // 创建 BLE 控制器
-//     let ble_controller = ExternalController::<_, 20>::new(transport);
+/// BLE 控制器循环
+async fn ble_task<C: Controller, P: PacketPool>(mut runner: Runner<'_, C, P>) {
+    rprintln!("🔄 BLE 事件循环已启动");
+    loop {
+        if let Err(e) = runner.run().await {
+            rprintln!("❌ BLE 错误: {:?}", e);
+        }
+    }
+}
 
-//     rprintln!("✓ BLE 控制器已初始化");
+/// GATT 事件处理
+async fn gatt_events_task<P: PacketPool>(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, P>,
+) -> Result<(), Error> {
+    rprintln!("📡 GATT 监听已启动");
+    let input_report = server.hid_service.input_report;
 
-//     // 创建主机资源
-//     use static_cell::StaticCell;
-//     static RESOURCES: StaticCell<HostResources<DefaultPacketPool, 2, 2>> = StaticCell::new();
-//     let mut resources = RESOURCES.init(HostResources::new());
+    let reason = loop {
+        match conn.next().await {
+            GattConnectionEvent::Disconnected { reason } => break reason,
+            GattConnectionEvent::Gatt { event } => {
+                match &event {
+                    GattEvent::Read(event) => {
+                        if event.handle() == input_report.handle {
+                            let value = server.get(&input_report);
+                            rprintln!("📖 读取输入报告: {:02X?}", value);
+                        }
+                    }
+                    GattEvent::Write(event) => {
+                        if event.handle() == input_report.handle {
+                            rprintln!("✏️ 写入输入报告: {:02X?}", event.data());
+                        }
+                    }
+                    _ => {}
+                }
+                match event.accept() {
+                    Ok(reply) => reply.send().await,
+                    Err(e) => rprintln!("❌ GATT 应答错误: {:?}", e),
+                };
+            }
+            _ => {}
+        }
+    };
+    rprintln!("🔌 连接已断开: {:?}", reason);
+    Ok(())
+}
 
-//     // 创建 BLE 主机
-//     let mut host = trouble_host::new(ble_controller, &mut resources);
+/// 键盘事件处理任务
+async fn keyboard_task<P: PacketPool>(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, P>,
+) {
+    rprintln!("⌨️ 键盘监听已启动");
+    let input_report = server.hid_service.input_report;
+    let mut counter = 0u32;
 
-//     rprintln!("✓ BLE 主机已创建");
+    loop {
+        // 接收键盘事件（带超时防止完全阻塞）
+        match embassy_time::with_timeout(
+            embassy_time::Duration::from_millis(500),
+            BLE_KEY_CHANNEL.receive()
+        ).await {
+            Ok(event) => {
+                counter += 1;
+                let (key_code, key_name) = match event {
+                    BleKeyEvent::Up => (key_codes::KEY_UP, "↑ UP"),
+                    BleKeyEvent::Down => (key_codes::KEY_DOWN, "↓ DOWN"),
+                };
 
-//     // 启动广告
-//     match host.start_advertise(
-//         &[Uuid::new_short(0x1812)], // HID Service UUID
-//         "T-Embed-KB",                // Device name
-//         &[],
-//     ) {
-//         Ok(_) => {
-//             rprintln!("✓ BLE 广告已启动");
-//             rprintln!("  设备名: T-Embed-KB");
-//             rprintln!("  服务: HID (0x1812)");
-//         }
-//         Err(e) => {
-//             rprintln!("❌ 启动广告失败: {:?}", e);
-//             return;
-//         }
-//     }
+                // 按键按下
+                let report = KeyboardReport::with_key(key_code);
+                let bytes = report.to_bytes();
+                
+                rprintln!("[{}] 🔑 按键: {}", counter, key_name);
+                if input_report.notify(conn, &bytes).await.is_err() {
+                    rprintln!("❌ 发送键按下失败");
+                    break;
+                }
 
-//     let mut last_report = KeyboardReport::EMPTY;
-//     let mut device_count = 0u32;
+                // 延迟后释放键
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(50)).await;
+                let release_bytes = KeyboardReport::EMPTY.to_bytes();
+                if input_report.notify(conn, &release_bytes).await.is_err() {
+                    rprintln!("❌ 发送键释放失败");
+                    break;
+                }
+                rprintln!("✓ 键已释放");
+            }
+            Err(_) => {
+                // 超时，继续等待
+            }
+        }
+    }
+}
 
-//     rprintln!("═══════════════════════════════════");
-//     rprintln!("等待设备连接...");
-//     rprintln!("═══════════════════════════════════");
+/// 广告和连接
+async fn advertise<'values, 'server, C: Controller>(
+    name: &'values str,
+    peripheral: &mut Peripheral<'values, C, DefaultPacketPool>,
+    server: &'server Server<'values>,
+) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
+    let mut advertiser_data = [0; 31];
+    let len = AdStructure::encode_slice(
+        &[
+            AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
+            AdStructure::ServiceUuids16(&[[0x0A, 0x18]]), // HID Service UUID
+            AdStructure::CompleteLocalName(name.as_bytes()),
+        ],
+        &mut advertiser_data[..],
+    )?;
 
-//     // 主事件循环
-//     loop {
-//         select3(
-//             host.tick(),
-//             BLE_KEY_CHANNEL.receive(),
-//             embassy_time::Timer::after(embassy_time::Duration::from_millis(100)),
-//         )
-//         .await;
+    rprintln!("📢 开始广告: {}", name);
+    let advertiser = peripheral
+        .advertise(
+            &Default::default(),
+            Advertisement::ConnectableScannableUndirected {
+                adv_data: &advertiser_data[..len],
+                scan_data: &[],
+            },
+        )
+        .await?;
 
-//         // 处理键盘事件
-//         if let Ok(event) = BLE_KEY_CHANNEL.try_recv() {
-//             device_count += 1;
-            
-//             let (key_code, key_name) = match event {
-//                 BleKeyEvent::Up => (key_codes::KEY_UP, "UP"),
-//                 BleKeyEvent::Down => (key_codes::KEY_DOWN, "DOWN"),
-//             };
-
-//             let report = KeyboardReport::with_key(key_code);
-            
-//             rprintln!("[{}] 🔑 按键事件: {} (0x{:02X})", device_count, key_name, key_code);
-//             rprintln!("    报告: {:?}", report.keys[0]);
-
-//             last_report = report;
-
-//             // 延迟后发送空报告（按键释放）
-//             embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
-            
-//             rprintln!("[{}] ↻ 按键释放", device_count);
-//             last_report = KeyboardReport::EMPTY;
-//         }
-//     }
-// }
+    rprintln!("⏳ 等待连接...");
+    let conn = advertiser.accept().await?.with_attribute_server(server)?;
+    Ok(conn)
+}
