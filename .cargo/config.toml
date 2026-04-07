@@ -1,5 +1,6 @@
 [target.xtensa-esp32s3-none-elf]
-runner = "probe-rs run --chip=esp32s3 --preverify --always-print-stacktrace --no-location --catch-hardfault"
+runner = "probe-rs run --chip=esp32s3 --always-print-stacktrace --no-location --catch-hardfault"
+# runner = "espflash flash --monitor"
 
 # [esp]
 # chip = "esp32s3"
@@ -9,6 +10,8 @@ runner = "probe-rs run --chip=esp32s3 --preverify --always-print-stacktrace --no
 
 
 [env]
+ESP_LOG="info"
+
 
 [build]
 rustflags = [

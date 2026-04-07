@@ -20,8 +20,6 @@ use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::spi::Mode as SpiMode;
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
-use esp_radio::ble::controller::BleConnector;
-use trouble_host::prelude::ExternalController;
 use mousefood::{EmbeddedBackend, EmbeddedBackendConfig};
 use ratatui::Terminal;
 use rtt_target::rprintln;
