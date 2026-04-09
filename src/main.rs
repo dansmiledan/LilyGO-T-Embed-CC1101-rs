@@ -20,9 +20,12 @@ use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::spi::Mode as SpiMode;
 use esp_hal::time::Rate;
 use esp_hal::timer::timg::TimerGroup;
+use esp_hal::psram::{ PsramConfig, PsramSize };
 use mousefood::{EmbeddedBackend, EmbeddedBackendConfig};
 use ratatui::Terminal;
-use rtt_target::rprintln;
+use log::info;
+
+// use rtt_target::rtt_init_print;
 
 use input::{init_encoder, encoder_task, ENCODER_CHANNEL, EncoderEvent};
 use ui::App;
@@ -30,7 +33,7 @@ use ble_hid::{BleKeyEvent, BLE_KEY_CHANNEL};
 
 #[panic_handler]
 fn panic(p: &core::panic::PanicInfo) -> ! {
-	rprintln!("Panic occurred: {:?}", p);
+	log::error!("Panic occurred: {:?}", p);
     loop {}
 }
 
@@ -39,11 +42,38 @@ extern crate alloc;
 esp_bootloader_esp_idf::esp_app_desc!();
 const MAX_BRIGHTNESS_STEPS: u8 = 16;
 
+// RTT Logger implementation
+// struct RttLogger;
+
+// impl log::Log for RttLogger {
+//     fn enabled(&self, _metadata: &log::Metadata) -> bool {
+//         true
+//     }
+
+//     fn log(&self, record: &log::Record) {
+//         if self.enabled(record.metadata()) {
+//             rtt_target::rprintln!(
+//                 "[{}] {}",
+//                 record.level(),
+//                 record.args()
+//             );
+//         }
+//     }
+
+//     fn flush(&self) {}
+// }
+
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    rtt_target::rtt_init_print!();
-
-    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
+    // rtt_init_print!();
+    // let _ = log::set_logger(&RttLogger);
+    // log::set_max_level(log::LevelFilter::Debug);
+    esp_println::logger::init_logger_from_env();
+    let psram = PsramConfig {
+        size: PsramSize::Size(8 * 1024 * 1024),
+        ..PsramConfig::default() 
+    };
+    let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max()).with_psram(psram);
     let peripherals = esp_hal::init(config);
 
     // 初始化堆分配器
@@ -52,7 +82,7 @@ async fn main(spawner: Spawner) -> ! {
     // esp-hal 1.0 自动初始化 PSRAM（如果启用了 psram feature）
     // 使用 psram_raw_parts 获取 PSRAM 信息
     let (psram_start, psram_size) = esp_hal::psram::psram_raw_parts(&peripherals.PSRAM);
-    rprintln!("PSRAM 信息: 起始地址={:p}, 大小={} 字节", psram_start, psram_size);
+    info!("PSRAM 信息: 起始地址={:p}, 大小={} 字节", psram_start, psram_size);
     
     // 如果 PSRAM 已初始化，将其添加到堆
     if psram_size > 0 {
@@ -63,14 +93,14 @@ async fn main(spawner: Spawner) -> ! {
                 esp_alloc::MemoryCapability::External.into(),
             ));
         }
-        rprintln!("PSRAM 已添加到堆分配器");
+        info!("PSRAM 已添加到堆分配器");
     }
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sw_int = esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
 
-    rprintln!("T-Embed CC1101 UI Starting...");
+    info!("T-Embed CC1101 UI Starting...");
 
     // 创建编码器实例
     let encoder = init_encoder(
@@ -122,7 +152,7 @@ async fn main(spawner: Spawner) -> ! {
         .unwrap();
 
     display.clear(Rgb565::BLACK).unwrap();
-    rprintln!("Display initialized!");
+    info!("Display initialized!");
 
     let config = EmbeddedBackendConfig {
         font_regular: mousefood::fonts::MONO_6X13,
@@ -136,11 +166,11 @@ async fn main(spawner: Spawner) -> ! {
 
     let backend = EmbeddedBackend::new(&mut display, config);
     let mut terminal = Terminal::new(backend).unwrap();
-    rprintln!("Terminal created!");
+    info!("Terminal created!");
 
     let mut app = App::new();
 
-    rprintln!("Starting UI loop...");
+    info!("Starting UI loop...");
 
     let mut last_brightness = 16u8;
 
@@ -148,7 +178,7 @@ async fn main(spawner: Spawner) -> ! {
         // 从通道接收编码器事件（带超时，以便定期刷新UI）
         match embassy_time::with_timeout(Duration::from_millis(50), ENCODER_CHANNEL.receive()).await {
             Ok(event) => {
-                rprintln!("Received event: {:?}", event);
+                info!("Received event: {:?}", event);
                 
                 // 如果处于 BLE 键盘模式，发送键盘事件
                 if app.is_ble_mode() {
@@ -175,7 +205,7 @@ async fn main(spawner: Spawner) -> ! {
         if current_brightness != last_brightness {
 			let from = MAX_BRIGHTNESS_STEPS - last_brightness;
         	let to   = MAX_BRIGHTNESS_STEPS - current_brightness;
-            rprintln!("Brightness updated to: {}", current_brightness);
+            info!("Brightness updated to: {}", current_brightness);
             // 模拟 PWM：根据亮度值控制背光
             // 128 为阈值，>= 128 点亮，< 128 关闭
             // if current_brightness >= 128 {
@@ -189,7 +219,7 @@ async fn main(spawner: Spawner) -> ! {
 			} else {
 				num = MAX_BRIGHTNESS_STEPS - from + to;
 			}
-			rprintln!("Adjusting backlight: from {} to {}, steps {}", from, to, num);
+			info!("Adjusting backlight: from {} to {}, steps {}", from, to, num);
 			for _ in 0..num {
 				backlight.set_low();
 				backlight.set_high();

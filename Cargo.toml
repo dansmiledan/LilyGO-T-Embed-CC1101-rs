@@ -13,13 +13,15 @@ esp-rtos = { path = "../../esp-rtos", features = [
   "esp-alloc",
   "esp32s3",
   "esp-radio",
+  "log-04"
 ] }
 
 esp-bootloader-esp-idf = { path = "../../esp-bootloader-esp-idf", features = ["esp32s3"] }
 
-esp-alloc = { version = "0.9.0", features = ["esp32s3"] }
-esp-radio = { path = "../../esp-radio", features = ["ble", "esp32s3", "unstable"] }
-rtt-target = "0.6.2"
+esp-alloc = { path = "../../esp-alloc", features = ["esp32s3"] }
+esp-radio = { path = "../../esp-radio", features = ["ble", "esp32s3", "unstable", "log-04"] }
+log = "0.4"
+# rtt-target = "0.6"
 embassy-executor = { version = "0.10.0", features = [] }
 embassy-time = "0.5.0"
 
@@ -42,6 +44,7 @@ trouble-host = { version = "0.6.0", features = [
     "scan",
 ] }
 bt-hci = "0.8.0"
+esp-println = { version="0.16.1", features = ["esp32s3", "log-04"] }
 
 
 [profile.dev]

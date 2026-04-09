@@ -1,6 +1,6 @@
 [target.xtensa-esp32s3-none-elf]
-runner = "probe-rs run --chip=esp32s3 --always-print-stacktrace --no-location --catch-hardfault"
-# runner = "espflash flash --monitor"
+#runner = "probe-rs run --chip=esp32s3 --always-print-stacktrace --no-location --catch-hardfault"
+runner = "espflash flash --monitor"
 
 # [esp]
 # chip = "esp32s3"

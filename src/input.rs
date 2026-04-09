@@ -2,7 +2,7 @@ use embassy_futures::select::{select4, Either4};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use esp_hal::gpio::{Event, Input, InputConfig, Pull};
-use rtt_target::rprintln;
+use log::debug;
 
 // 全局通道用于传递编码器事件
 pub static ENCODER_CHANNEL: Channel<CriticalSectionRawMutex, EncoderEvent, 8> = Channel::new();
@@ -84,7 +84,7 @@ pub async fn encoder_task(mut encoder: Encoder<'static>) {
         pressed: false,
     };
 
-    rprintln!("Encoder task started");
+    debug!("Encoder task started");
 
     loop {
         // 等待编码器和两个按钮的边沿触发
@@ -118,11 +118,11 @@ pub async fn encoder_task(mut encoder: Encoder<'static>) {
                         // 检测旋转方向
                         if state.position_ext > state.position_ext_prev {
                             state.position_ext_prev = state.position_ext;
-                            rprintln!("Clockwise");
+                            debug!("Clockwise");
                             ENCODER_CHANNEL.send(EncoderEvent::CounterClockwise).await;
                         } else if state.position_ext < state.position_ext_prev {
                             state.position_ext_prev = state.position_ext;
-                            rprintln!("CounterClockwise");
+                            debug!("CounterClockwise");
                             ENCODER_CHANNEL.send(EncoderEvent::Clockwise).await;
                         }
                     }
@@ -132,7 +132,7 @@ pub async fn encoder_task(mut encoder: Encoder<'static>) {
                 // 确认键被按下
                 if !confirm_state.pressed {
                     confirm_state.pressed = true;
-                    rprintln!("Confirm button pressed");
+                    debug!("Confirm button pressed");
                     ENCODER_CHANNEL.send(EncoderEvent::ConfirmPressed).await;
                 }
             }
@@ -140,7 +140,7 @@ pub async fn encoder_task(mut encoder: Encoder<'static>) {
                 // 返回键被按下
                 if !back_state.pressed {
                     back_state.pressed = true;
-                    rprintln!("Back button pressed");
+                    debug!("Back button pressed");
                     ENCODER_CHANNEL.send(EncoderEvent::BackPressed).await;
                 }
             }
@@ -149,14 +149,14 @@ pub async fn encoder_task(mut encoder: Encoder<'static>) {
         // 检查确认键释放
         if confirm_state.pressed && encoder.confirm_button.is_high() {
             confirm_state.pressed = false;
-            rprintln!("Confirm button released");
+            debug!("Confirm button released");
             ENCODER_CHANNEL.send(EncoderEvent::ConfirmReleased).await;
         }
 
         // 检查返回键释放
         if back_state.pressed && encoder.back_button.is_high() {
             back_state.pressed = false;
-            rprintln!("Back button released");
+            debug!("Back button released");
             ENCODER_CHANNEL.send(EncoderEvent::BackReleased).await;
         }
     }

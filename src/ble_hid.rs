@@ -5,7 +5,7 @@
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_futures::{join::join, select::select};
-use rtt_target::rprintln;
+use log::info;
 use esp_radio::ble::controller::BleConnector;
 use trouble_host::prelude::*;
 
@@ -77,10 +77,10 @@ struct HidService {
 /// BLE 主控制器初始化和运行
 #[embassy_executor::task]
 pub async fn run_ble_keyboard(bluetooth:esp_hal::peripherals::BT<'static> ) {
-    rprintln!("启动 BLE 键盘服务...");
+    info!("启动 BLE 键盘服务...");
     
     let address: Address = Address::random([0xff, 0x8f, 0x1a, 0x05, 0xe4, 0xff]);
-    rprintln!("BLE 地址: {:?}", address);
+    info!("BLE 地址: {:?}", address);
 
     let connector = BleConnector::new(bluetooth, Default::default()).unwrap();
     let controller: ExternalController<_, 1> = ExternalController::new(connector);
@@ -92,7 +92,7 @@ pub async fn run_ble_keyboard(bluetooth:esp_hal::peripherals::BT<'static> ) {
         ..
     } = stack.build();
 
-    rprintln!("✓ BLE 主机已创建");
+    info!("✓ BLE 主机已创建");
 
     let server = Server::new_with_config(GapConfig::Peripheral(PeripheralConfig {
         name: "T-Embed-KB",
@@ -102,11 +102,11 @@ pub async fn run_ble_keyboard(bluetooth:esp_hal::peripherals::BT<'static> ) {
 
     let _ = join(
         async {
-            rprintln!("BLE 事件循环已启动");
+            info!("BLE 事件循环已启动");
             let mut runner = runner;
             loop {
                 if let Err(e) = runner.run().await {
-                    rprintln!("BLE 错误: {:?}", e);
+                    info!("BLE 错误: {:?}", e);
                 }
             }
         },
@@ -114,14 +114,14 @@ pub async fn run_ble_keyboard(bluetooth:esp_hal::peripherals::BT<'static> ) {
             loop {
                 match advertise("T-Embed-KB", &mut peripheral, &server).await {
                     Ok(conn) => {
-                        rprintln!("客户端已连接");
+                        info!("客户端已连接");
                         let gatt = gatt_events_task(&server, &conn);
                         let keyboard = keyboard_task(&server, &conn);
                         select(gatt, keyboard).await;
-                        rprintln!("等待新连接...");
+                        info!("等待新连接...");
                     }
                     Err(e) => {
-                        rprintln!("广告错误: {:?}", e);
+                        info!("广告错误: {:?}", e);
                     }
                 }
             }
@@ -135,7 +135,7 @@ async fn gatt_events_task<P: PacketPool>(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, P>,
 ) -> Result<(), Error> {
-    rprintln!("GATT 监听已启动");
+    info!("GATT 监听已启动");
     let input_report = server.hid_service.input_report;
 
     let reason = loop {
@@ -146,25 +146,25 @@ async fn gatt_events_task<P: PacketPool>(
                     GattEvent::Read(event) => {
                         if event.handle() == input_report.handle {
                             let value = server.get(&input_report);
-                            rprintln!("读取输入报告: {:02X?}", value);
+                            info!("读取输入报告: {:02X?}", value);
                         }
                     }
                     GattEvent::Write(event) => {
                         if event.handle() == input_report.handle {
-                            rprintln!("写入输入报告: {:02X?}", event.data());
+                            info!("写入输入报告: {:02X?}", event.data());
                         }
                     }
                     _ => {}
                 }
                 match event.accept() {
                     Ok(reply) => reply.send().await,
-                    Err(e) => rprintln!("GATT 应答错误: {:?}", e),
+                    Err(e) => info!("GATT 应答错误: {:?}", e),
                 };
             }
             _ => {}
         }
     };
-    rprintln!("连接已断开: {:?}", reason);
+    info!("连接已断开: {:?}", reason);
     Ok(())
 }
 
@@ -173,7 +173,7 @@ async fn keyboard_task<P: PacketPool>(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, P>,
 ) {
-    rprintln!("键盘监听已启动");
+    info!("键盘监听已启动");
     let input_report = server.hid_service.input_report;
     let mut counter = 0u32;
 
@@ -194,20 +194,20 @@ async fn keyboard_task<P: PacketPool>(
                 let report = KeyboardReport::with_key(key_code);
                 let bytes = report.to_bytes();
                 
-                rprintln!("[{}] 按键: {}", counter, key_name);
+                info!("[{}] 按键: {}", counter, key_name);
                 if input_report.notify(conn, &bytes).await.is_err() {
-                    rprintln!("发送键按下失败");
+                    info!("发送键按下失败");
                     break;
                 }
 
                 // 延迟后释放键
-                embassy_time::Timer::after(embassy_time::Duration::from_millis(50)).await;
+                embassy_time::Timer::after(embassy_time::Duration::from_millis(10)).await;
                 let release_bytes = KeyboardReport::EMPTY.to_bytes();
                 if input_report.notify(conn, &release_bytes).await.is_err() {
-                    rprintln!("发送键释放失败");
+                    info!("发送键释放失败");
                     break;
                 }
-                rprintln!("键已释放");
+                info!("键已释放");
             }
             Err(_) => {
                 // 超时，继续等待
@@ -232,7 +232,7 @@ async fn advertise<'values, 'server, C: Controller>(
         &mut advertiser_data[..],
     )?;
 
-    rprintln!("开始广告: {}", name);
+    info!("开始广告: {}", name);
     let advertiser = peripheral
         .advertise(
             &Default::default(),
@@ -243,7 +243,7 @@ async fn advertise<'values, 'server, C: Controller>(
         )
         .await?;
 
-    rprintln!("等待连接...");
+       info!("等待连接...");
     let conn = advertiser.accept().await?.with_attribute_server(server)?;
     Ok(conn)
 }
