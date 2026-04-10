@@ -39,11 +39,14 @@ ratatui = { version = "0.30", default-features = false }
 
 # BLE HID dependencies
 trouble-host = { version = "0.6.0", features = [
-      "default-packet-pool-mtu-255",
+    "default-packet-pool-mtu-255",
     "derive",
     "scan",
+    "security",
 ] }
-bt-hci = "0.8.0"
+rand = { version = "0.8", default-features = false }
+rand_chacha = { version = "0.3", default-features = false }
+bt-hci = { version = "0.8.0", default-features = false }
 esp-println = { version="0.16.1", features = ["esp32s3", "log-04"] }
 
 
