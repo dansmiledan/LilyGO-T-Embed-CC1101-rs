@@ -15,7 +15,10 @@ mod ble_hid;
 use embassy_executor::Spawner;
 use embassy_time::Duration;
 use esp_hal::clock::CpuClock;
-use esp_hal::gpio::{Level, Output, OutputConfig, Pin};
+use esp_hal::gpio::{Level, Output, OutputConfig, Pin, DriveMode};
+use esp_hal::ledc::{Ledc, LSGlobalClkSource, LowSpeed};
+use esp_hal::ledc::timer::{self, TimerIFace};
+use esp_hal::ledc::channel::{self, ChannelIFace};
 use esp_hal::spi::master::{Config as SpiConfig, Spi};
 use esp_hal::spi::Mode as SpiMode;
 use esp_hal::time::Rate;
@@ -40,29 +43,6 @@ fn panic(p: &core::panic::PanicInfo) -> ! {
 extern crate alloc;
 
 esp_bootloader_esp_idf::esp_app_desc!();
-const MAX_BRIGHTNESS_STEPS: u8 = 16;
-
-// RTT Logger implementation
-// struct RttLogger;
-
-// impl log::Log for RttLogger {
-//     fn enabled(&self, _metadata: &log::Metadata) -> bool {
-//         true
-//     }
-
-//     fn log(&self, record: &log::Record) {
-//         if self.enabled(record.metadata()) {
-//             rtt_target::rprintln!(
-//                 "[{}] {}",
-//                 record.level(),
-//                 record.args()
-//             );
-//         }
-//     }
-
-//     fn flush(&self) {}
-// }
-
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
     // rtt_init_print!();
@@ -129,7 +109,24 @@ async fn main(spawner: Spawner) -> ! {
 
     let cs = Output::new(peripherals.GPIO41, Level::Low, OutputConfig::default());
     let dc = Output::new(peripherals.GPIO16, Level::Low, OutputConfig::default());
-    let mut backlight = Output::new(peripherals.GPIO21, Level::High, OutputConfig::default());
+
+    // 初始化 LEDC 硬件 PWM 控制 AW9364 背光
+    let mut ledc = Ledc::new(peripherals.LEDC);
+    ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
+
+    let mut lstimer0 = ledc.timer::<LowSpeed>(timer::Number::Timer0);
+    lstimer0.configure(timer::config::Config {
+        duty: timer::config::Duty::Duty5Bit,
+        clock_source: timer::LSClockSource::APBClk,
+        frequency: Rate::from_khz(20),
+    }).unwrap();
+
+    let mut channel0 = ledc.channel(channel::Number::Channel0, peripherals.GPIO21);
+    channel0.configure(channel::config::Config {
+        timer: &lstimer0,
+        duty_pct: 100,
+        drive_mode: DriveMode::PushPull,
+    }).unwrap();
 
     use display_interface_spi::SPIInterface;
     use embedded_hal_bus::spi::ExclusiveDevice;
@@ -203,27 +200,9 @@ async fn main(spawner: Spawner) -> ! {
         // 检查亮度是否改变，如果改变则更新硬件
         let current_brightness = app.get_brightness();
         if current_brightness != last_brightness {
-			let from = MAX_BRIGHTNESS_STEPS - last_brightness;
-        	let to   = MAX_BRIGHTNESS_STEPS - current_brightness;
-            info!("Brightness updated to: {}", current_brightness);
-            // 模拟 PWM：根据亮度值控制背光
-            // 128 为阈值，>= 128 点亮，< 128 关闭
-            // if current_brightness >= 128 {
-            //     backlight.set_high();
-            // } else {
-            //     backlight.set_low();
-            // }
-			let num;
-			if to > from {
-				num  = to - from;
-			} else {
-				num = MAX_BRIGHTNESS_STEPS - from + to;
-			}
-			info!("Adjusting backlight: from {} to {}, steps {}", from, to, num);
-			for _ in 0..num {
-				backlight.set_low();
-				backlight.set_high();
-			}
+            let duty_pct = ((current_brightness as u16 * 100) / 16).min(100) as u8;
+            info!("Brightness updated to: {}, duty {}%", current_brightness, duty_pct);
+            channel0.set_duty(duty_pct).unwrap();
             last_brightness = current_brightness;
         }
 
