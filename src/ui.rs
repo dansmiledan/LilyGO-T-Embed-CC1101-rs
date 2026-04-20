@@ -67,7 +67,7 @@ impl App {
             state: AppState::Menu,
             selected: 0,
             menu_items: MenuItem::ALL,
-            brightness: 16,
+            brightness: 100,
         }
     }
     
@@ -107,7 +107,7 @@ impl App {
             AppState::BrightnessPopup => {
                 match event {
                     EncoderEvent::Clockwise => {
-                        if self.brightness < 16 {
+                        if self.brightness < 100 {
                             self.brightness = self.brightness + 1;
                         }
                     }
@@ -246,8 +246,8 @@ impl App {
         
         // 用 Block 渲染背景边框和进度条
         let gauge = Gauge::default()
-            .ratio(self.brightness as f64 / 16.0)
-            .label(alloc::format!("Brightness: {}/16", self.brightness))
+            .ratio(self.brightness as f64 / 100.0)
+            .label(alloc::format!("Brightness: {}/100", self.brightness))
             .style(Style::default().fg(Color::Green).bg(Color::Black))
             .block(
                 Block::bordered()
