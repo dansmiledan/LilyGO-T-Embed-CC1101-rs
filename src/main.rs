@@ -32,7 +32,7 @@ use log::info;
 use input::{init_encoder, encoder_task, ENCODER_CHANNEL, EncoderEvent};
 use ui::App;
 use backlight::Backlight;
-use ble_hid::{BleKeyEvent, BLE_KEY_CHANNEL};
+use ble_hid::{BleKeyEvent, BLE_KEY_CHANNEL, BleControlEvent, BLE_CONTROL_CHANNEL};
 
 #[panic_handler]
 fn panic(p: &core::panic::PanicInfo) -> ! {
@@ -165,6 +165,7 @@ async fn main(spawner: Spawner) -> ! {
     info!("Starting UI loop...");
 
     let mut last_brightness = 100u8;
+    let mut was_ble_mode = app.is_ble_mode();
 
     loop {
         // 从通道接收编码器事件（带超时，以便定期刷新UI）
@@ -191,6 +192,17 @@ async fn main(spawner: Spawner) -> ! {
                 // 超时，继续刷新UI
             }
         }
+
+        // 检测 BLE 键盘模式进入/退出，控制蓝牙广播
+        let is_ble_mode = app.is_ble_mode();
+        if !was_ble_mode && is_ble_mode {
+            info!("进入 BLE 键盘模式，启动蓝牙广播");
+            let _ = BLE_CONTROL_CHANNEL.try_send(BleControlEvent::Start);
+        } else if was_ble_mode && !is_ble_mode {
+            info!("退出 BLE 键盘模式，停止蓝牙广播");
+            let _ = BLE_CONTROL_CHANNEL.try_send(BleControlEvent::Stop);
+        }
+        was_ble_mode = is_ble_mode;
 
         // 检查亮度是否改变，如果改变则更新硬件
         let current_brightness = app.get_brightness();

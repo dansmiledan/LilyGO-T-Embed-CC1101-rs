@@ -5,7 +5,7 @@
 
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_futures::{join::join, select::select};
+use embassy_futures::{join::join, select::{select, Either}};
 use log::info;
 use esp_radio::ble::controller::BleConnector;
 use trouble_host::prelude::*;
@@ -21,6 +21,16 @@ pub enum BleKeyEvent {
 
 /// BLE 键盘事件通道
 pub static BLE_KEY_CHANNEL: Channel<CriticalSectionRawMutex, BleKeyEvent, 8> = Channel::new();
+
+/// BLE 控制事件
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BleControlEvent {
+    Start,
+    Stop,
+}
+
+/// BLE 控制通道（用于启停蓝牙广播）
+pub static BLE_CONTROL_CHANNEL: Channel<CriticalSectionRawMutex, BleControlEvent, 4> = Channel::new();
 
 /// USB HID 键盘键码
 pub mod key_codes {
@@ -228,20 +238,63 @@ pub async fn run_ble_keyboard(bluetooth: esp_hal::peripherals::BT<'static>) {
         },
         async {
             loop {
-                match advertise("T-Embed-KB", &mut peripheral, &server).await {
-                    Ok(conn) => {
-                        info!("客户端已连接");
-                        let gatt = gatt_events_task(&server, &conn);
-                        let keyboard = keyboard_task(&server, &conn);
-                        select(gatt, keyboard).await;
-                        info!("等待新连接...");
+                // 等待 Start 命令
+                match BLE_CONTROL_CHANNEL.receive().await {
+                    BleControlEvent::Start => {
+                        info!("收到 BLE 启动命令，开始广播...");
                     }
-                    Err(e) => {
-                        info!("广告错误: {:?}", e);
+                    _ => continue,
+                }
+
+                let mut running = true;
+                while running {
+                    let adv_result = select(
+                        advertise("T-Embed-KB", &mut peripheral, &server),
+                        BLE_CONTROL_CHANNEL.receive(),
+                    )
+                    .await;
+
+                    match adv_result {
+                        Either::First(Ok(conn)) => {
+                            info!("客户端已连接");
+                            let conn_result = select(
+                                select(
+                                    gatt_events_task(&server, &conn),
+                                    keyboard_task(&server, &conn),
+                                ),
+                                BLE_CONTROL_CHANNEL.receive(),
+                            )
+                            .await;
+
+                            match conn_result {
+                                Either::Second(BleControlEvent::Stop) => {
+                                    info!("收到停止命令，断开连接");
+                                    running = false;
+                                }
+                                Either::Second(BleControlEvent::Start) => {
+                                    // 忽略重复的 Start
+                                }
+                                _ => {
+                                    info!("连接已断开，等待新连接...");
+                                }
+                            }
+                        }
+                        Either::First(Err(e)) => {
+                            info!("广告错误: {:?}", e);
+                        }
+                        Either::Second(BleControlEvent::Stop) => {
+                            info!("收到停止命令，停止广播");
+                            running = false;
+                        }
+                        Either::Second(BleControlEvent::Start) => {
+                            // 忽略重复的 Start
+                        }
                     }
                 }
+
+                info!("BLE 键盘模式已停止");
             }
-        }
+        },
     )
     .await;
 }
