@@ -70,20 +70,22 @@ SPI (Shared):
 │   └── config.toml     # Cargo config: target, runner, rustflags
 ├── .clippy.toml        # Clippy config: stack-size-threshold = 1024
 ├── src/
-│   ├── main.rs         # Entry point, hardware init, main loop
+│   ├── main.rs         # Entry point, hardware init, command dispatch
+│   ├── app.rs          # Application state machine, UI rendering, event handling
 │   ├── input.rs        # Rotary encoder and button input handling
-│   ├── ui.rs           # UI components (menu, brightness popup)
-│   └── backlight.rs    # Brightness control channel (stub)
+│   ├── backlight.rs    # LEDC hardware PWM backlight driver
+│   └── ble_hid.rs      # BLE HID keyboard over GATT
 └── ref_doc/
     └── T-Embed-CC1101  # Symlink to reference docs (hardware specs, etc.)
 ```
 
 ### Module Responsibilities
 
-- **`main.rs`**: Initializes hardware (SPI, GPIO, display), sets up the Embassy executor, creates the terminal backend, and runs the main UI loop.
+- **`main.rs`**: Initializes all hardware (SPI, GPIO, LEDC, BLE), spawns async tasks, and runs the main loop. Receives encoder events, delegates to `App`, and executes returned `Command`s.
+- **`app.rs`**: Central application state machine with **hierarchical navigation stack**. Defines `UiNode` trait for pluggable UI pages/menus. `App` manages a stack of `Box<dyn UiNode>` — pushing enters sub-menus/features, popping goes back to parent. Each node has `on_enter/on_exit` lifecycle hooks for side effects (e.g. start/stop BLE advertising). Returns `Vec<Command>` to `main.rs` for hardware operations.
 - **`input.rs`**: Handles EC11 rotary encoder state machine and button debouncing. Uses async edge detection and sends events through `ENCODER_CHANNEL`.
-- **`ui.rs`**: Implements the application state machine (`AppState`), menu rendering with `ratatui`, and event handling for navigation.
-- **`backlight.rs`**: Defines a static channel for brightness updates (currently unused, reserved for future features).
+- **`backlight.rs`**: LEDC hardware PWM driver for AW9364 backlight IC. Wraps `Channel` configuration and provides `set_brightness(level: u8)`.
+- **`ble_hid.rs`**: BLE HID keyboard implementation using `trouble-host`. Provides GATT server with HID/Battery/DeviceInfo services. Receives `BleKeyEvent` via `BLE_KEY_CHANNEL` and `BleControlEvent` via `BLE_CONTROL_CHANNEL` to start/stop advertising.
 
 ## Build and Flash Commands
 
@@ -151,16 +153,20 @@ The rotary encoder uses a state machine with a lookup table (`KNOBDIR`) to detec
 ### UI State Machine
 
 ```
-AppState::Menu
-  ├── Rotate -> Navigate menu items
-  ├── ConfirmReleased -> Select item
-  │   └── If Settings -> Enter BrightnessPopup
-  └── Back -> (no action currently)
-
-AppState::BrightnessPopup
-  ├── Rotate -> Adjust brightness (1-16)
-  ├── ConfirmReleased -> Close popup
-  └── BackPressed -> Close popup
+NavigationStack (hierarchical, push/pop)
+  RootMenu
+    ├── BLE (push BleMenu)
+    │     ├── BLE Keyboard (push BleKeyboardNode)
+    │     │     ├── Rotate -> Send BLE HID keys
+    │     │     └── Back -> Pop, stop BLE advertising
+    │     └── BLE Spam (push BleSpamNode)
+    │           └── Back -> Pop
+    │     └── Back -> Pop to RootMenu
+    └── Settings (push SettingsMenu)
+          ├── Brightness (push BrightnessNode)
+          │     ├── Rotate -> Adjust backlight + Command::Backlight
+          │     └── Back/Confirm -> Pop
+          └── Back -> Pop to RootMenu
 ```
 
 ### Display Backend
@@ -172,7 +178,7 @@ AppState::BrightnessPopup
 
 ### Backlight Control
 
-Currently implements a simple software PWM by bit-banging GPIO21. The brightness level (1-16) controls how many "off" pulses are sent in a sequence.
+Uses ESP32-S3 LEDC hardware PWM at 20kHz to drive the AW9364 backlight IC. Brightness is mapped linearly from 1-100 to PWM duty cycle (1%-100%).
 
 ## Debugging
 

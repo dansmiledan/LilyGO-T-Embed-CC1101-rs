@@ -8,7 +8,7 @@
 #![deny(clippy::large_stack_frames)]
 
 mod input;
-mod ui;
+mod app;
 mod backlight;
 mod ble_hid;
 
@@ -27,12 +27,10 @@ use mousefood::{EmbeddedBackend, EmbeddedBackendConfig};
 use ratatui::Terminal;
 use log::info;
 
-// use rtt_target::rtt_init_print;
-
-use input::{init_encoder, encoder_task, ENCODER_CHANNEL, EncoderEvent};
-use ui::App;
+use input::{init_encoder, encoder_task, ENCODER_CHANNEL};
+use app::{App, Command};
 use backlight::Backlight;
-use ble_hid::{BleKeyEvent, BLE_KEY_CHANNEL, BleControlEvent, BLE_CONTROL_CHANNEL};
+use ble_hid::{BLE_KEY_CHANNEL, BLE_CONTROL_CHANNEL};
 
 #[panic_handler]
 fn panic(p: &core::panic::PanicInfo) -> ! {
@@ -43,28 +41,44 @@ fn panic(p: &core::panic::PanicInfo) -> ! {
 extern crate alloc;
 
 esp_bootloader_esp_idf::esp_app_desc!();
+
+/// 执行 App 产生的硬件命令
+fn execute_command(cmd: Command, backlight: &Backlight<'_>) {
+    match cmd {
+        Command::Backlight(level) => {
+            info!("Brightness updated to: {}", level);
+            backlight.set_brightness(level);
+        }
+        Command::BleControl(event) => {
+            match event {
+                ble_hid::BleControlEvent::Start => info!("进入 BLE 键盘模式，启动蓝牙广播"),
+                ble_hid::BleControlEvent::Stop => info!("退出 BLE 键盘模式，停止蓝牙广播"),
+            }
+            let _ = BLE_CONTROL_CHANNEL.try_send(event);
+        }
+        Command::BleKey(event) => {
+            let _ = BLE_KEY_CHANNEL.try_send(event);
+        }
+    }
+}
+
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
-    // rtt_init_print!();
-    // let _ = log::set_logger(&RttLogger);
-    // log::set_max_level(log::LevelFilter::Debug);
     esp_println::logger::init_logger_from_env();
+
     let psram = PsramConfig {
         size: PsramSize::Size(8 * 1024 * 1024),
-        ..PsramConfig::default() 
+        ..PsramConfig::default()
     };
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max()).with_psram(psram);
     let peripherals = esp_hal::init(config);
 
     // 初始化堆分配器
     esp_alloc::heap_allocator!(size: 128 * 1024);
-    
-    // esp-hal 1.0 自动初始化 PSRAM（如果启用了 psram feature）
-    // 使用 psram_raw_parts 获取 PSRAM 信息
+
     let (psram_start, psram_size) = esp_hal::psram::psram_raw_parts(&peripherals.PSRAM);
     info!("PSRAM 信息: 起始地址={:p}, 大小={} 字节", psram_start, psram_size);
-    
-    // 如果 PSRAM 已初始化，将其添加到堆
+
     if psram_size > 0 {
         unsafe {
             esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
@@ -76,28 +90,29 @@ async fn main(spawner: Spawner) -> ! {
         info!("PSRAM 已添加到堆分配器");
     }
 
+    // 启动系统定时器
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let sw_int = esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_int.software_interrupt0);
 
     info!("T-Embed CC1101 UI Starting...");
 
-    // 创建编码器实例
+    // ========== 硬件初始化 ==========
+
+    // 编码器输入
     let encoder = init_encoder(
         peripherals.GPIO4.degrade(),
         peripherals.GPIO5.degrade(),
         peripherals.GPIO0.degrade(),
         peripherals.GPIO6.degrade(),
     );
-
-    // 启动编码器任务
     spawner.spawn(encoder_task(encoder).unwrap());
 
-    // 启动 BLE 键盘监听任务
+    // BLE 键盘任务（初始状态等待启动命令，不广播）
     let bluetooth = peripherals.BT;
     spawner.spawn(ble_hid::run_ble_keyboard(bluetooth).unwrap());
 
-
+    // SPI 显示屏
     let spi_config = SpiConfig::default()
         .with_frequency(Rate::from_mhz(80))
         .with_mode(SpiMode::_0);
@@ -110,7 +125,7 @@ async fn main(spawner: Spawner) -> ! {
     let cs = Output::new(peripherals.GPIO41, Level::Low, OutputConfig::default());
     let dc = Output::new(peripherals.GPIO16, Level::Low, OutputConfig::default());
 
-    // 初始化背光驱动（LEDC 硬件 PWM 控制 AW9364）
+    // 背光（LEDC 硬件 PWM）
     let mut ledc = Ledc::new(peripherals.LEDC);
     ledc.set_global_slow_clock(LSGlobalClkSource::APBClk);
 
@@ -123,6 +138,7 @@ async fn main(spawner: Spawner) -> ! {
 
     let backlight = Backlight::new(&ledc, &lstimer0, peripherals.GPIO21);
 
+    // 初始化 ST7789 显示屏
     use display_interface_spi::SPIInterface;
     use embedded_hal_bus::spi::ExclusiveDevice;
 
@@ -160,85 +176,32 @@ async fn main(spawner: Spawner) -> ! {
     let mut terminal = Terminal::new(backend).unwrap();
     info!("Terminal created!");
 
-    let mut app = App::new();
+    // ========== 应用主循环 ==========
 
+    let mut app = App::new();
     info!("Starting UI loop...");
 
-    let mut last_brightness = 100u8;
-    let mut was_ble_mode = app.is_ble_mode();
-
     loop {
-        // 从通道接收编码器事件（带超时，以便定期刷新UI）
+        // 接收编码器事件（带超时，以便定期刷新UI）
         match embassy_time::with_timeout(Duration::from_millis(50), ENCODER_CHANNEL.receive()).await {
             Ok(event) => {
                 info!("Received event: {:?}", event);
-                
-                // 如果处于 BLE 键盘模式，发送键盘事件
-                if app.is_ble_mode() {
-                    match event {
-                        EncoderEvent::Clockwise => {
-                            let _ = BLE_KEY_CHANNEL.try_send(BleKeyEvent::Down);
-                        }
-                        EncoderEvent::CounterClockwise => {
-                            let _ = BLE_KEY_CHANNEL.try_send(BleKeyEvent::Up);
-                        }
-                        _ => {}
-                    }
+                let commands = app.handle_event(event);
+                for cmd in commands {
+                    execute_command(cmd, &backlight);
                 }
-                
-                app.handle_event(event);
             }
             Err(_) => {
                 // 超时，继续刷新UI
             }
         }
 
-        // 检测 BLE 键盘模式进入/退出，控制蓝牙广播
-        let is_ble_mode = app.is_ble_mode();
-        if !was_ble_mode && is_ble_mode {
-            info!("进入 BLE 键盘模式，启动蓝牙广播");
-            let _ = BLE_CONTROL_CHANNEL.try_send(BleControlEvent::Start);
-        } else if was_ble_mode && !is_ble_mode {
-            info!("退出 BLE 键盘模式，停止蓝牙广播");
-            let _ = BLE_CONTROL_CHANNEL.try_send(BleControlEvent::Stop);
-        }
-        was_ble_mode = is_ble_mode;
-
-        // 检查亮度是否改变，如果改变则更新硬件
-        let current_brightness = app.get_brightness();
-        if current_brightness != last_brightness {
-            info!("Brightness updated to: {}", current_brightness);
-            backlight.set_brightness(current_brightness);
-            last_brightness = current_brightness;
+        // 定期更新（检测亮度变化等）
+        let commands = app.tick();
+        for cmd in commands {
+            execute_command(cmd, &backlight);
         }
 
         terminal.draw(|frame| app.render(frame)).unwrap();
     }
 }
-
-// BLE 键盘监听任务 - 简化版本，用于接收和处理键盘事件
-// #[embassy_executor::task]
-// async fn ble_keyboard_listener() {
-//     rprintln!("🎧 BLE 键盘监听任务已启动");
-//     let mut counter = 0u32;
-    
-//     loop {
-//         // 监听 BLE_KEY_CHANNEL 中的事件
-//         match embassy_time::with_timeout(
-//             embassy_time::Duration::from_millis(1000),
-//             BLE_KEY_CHANNEL.receive()
-//         ).await {
-//             Ok(event) => {
-//                 counter += 1;
-//                 let key_name = match event {
-//                     BleKeyEvent::Up => "↑ UP (0x52)",
-//                     BleKeyEvent::Down => "↓ DOWN (0x51)",
-//                 };
-//                 rprintln!("[{}] 🔑 BLE 键盘事件: {}", counter, key_name);
-//             }
-//             Err(_) => {
-//                 // 超时，继续等待
-//             }
-//         }
-//     }
-// }
