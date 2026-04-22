@@ -11,6 +11,7 @@ mod input;
 mod app;
 mod backlight;
 mod ble_hid;
+mod sd_card;
 
 use embassy_executor::Spawner;
 use embassy_time::Duration;
@@ -39,6 +40,7 @@ fn panic(p: &core::panic::PanicInfo) -> ! {
 }
 
 extern crate alloc;
+use alloc::boxed::Box;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -112,7 +114,7 @@ async fn main(spawner: Spawner) -> ! {
     let bluetooth = peripherals.BT;
     spawner.spawn(ble_hid::run_ble_keyboard(bluetooth).unwrap());
 
-    // SPI 显示屏
+    // SPI 总线初始化（与屏幕和SD卡共享）
     let spi_config = SpiConfig::default()
         .with_frequency(Rate::from_mhz(80))
         .with_mode(SpiMode::_0);
@@ -120,9 +122,18 @@ async fn main(spawner: Spawner) -> ! {
     let spi = Spi::new(peripherals.SPI2, spi_config)
         .unwrap()
         .with_sck(peripherals.GPIO11)
-        .with_mosi(peripherals.GPIO9);
+        .with_mosi(peripherals.GPIO9)
+        .with_miso(peripherals.GPIO10);
 
-    let cs = Output::new(peripherals.GPIO41, Level::Low, OutputConfig::default());
+    // 使用 StaticCell + RefCellDevice 共享 SPI 总线
+    use core::cell::RefCell;
+    use embedded_hal_bus::spi::RefCellDevice;
+    use static_cell::StaticCell;
+
+    static SPI_BUS: StaticCell<RefCell<esp_hal::spi::master::Spi<'static, esp_hal::Blocking>>> = StaticCell::new();
+    let spi_bus = SPI_BUS.init(RefCell::new(spi));
+
+    let cs_display = Output::new(peripherals.GPIO41, Level::Low, OutputConfig::default());
     let dc = Output::new(peripherals.GPIO16, Level::Low, OutputConfig::default());
 
     // 背光（LEDC 硬件 PWM）
@@ -140,10 +151,9 @@ async fn main(spawner: Spawner) -> ! {
 
     // 初始化 ST7789 显示屏
     use display_interface_spi::SPIInterface;
-    use embedded_hal_bus::spi::ExclusiveDevice;
 
-    let spi_dev = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
-    let di = SPIInterface::new(spi_dev, dc);
+    let spi_dev_display = RefCellDevice::new_no_delay(spi_bus, cs_display).unwrap();
+    let di = SPIInterface::new(spi_dev_display, dc);
 
     use mipidsi::Builder;
     use mipidsi::models::ST7789;
@@ -161,6 +171,20 @@ async fn main(spawner: Spawner) -> ! {
 
     display.clear(Rgb565::BLACK).unwrap();
     info!("Display initialized!");
+
+    // 初始化 SD 卡
+    let cs_sd = Output::new(peripherals.GPIO13, Level::High, OutputConfig::default());
+    let spi_dev_sd = RefCellDevice::new_no_delay(spi_bus, cs_sd).unwrap();
+
+    match sd_card::SdManagerImpl::new(spi_dev_sd, esp_hal::delay::Delay::new()) {
+        Ok(sd_manager) => {
+            info!("SD卡初始化成功");
+            sd_card::init_fs(Box::new(sd_manager));
+        }
+        Err(e) => {
+            info!("SD卡初始化失败: {:?}", e);
+        }
+    }
 
     let config = EmbeddedBackendConfig {
         font_regular: mousefood::fonts::MONO_6X13,

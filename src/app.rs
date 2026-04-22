@@ -7,6 +7,7 @@ pub mod ui_node;
 pub mod root_menu;
 pub mod ble;
 pub mod settings;
+pub mod sd_browser;
 
 pub use ui_node::UiNode;
 
