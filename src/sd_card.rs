@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use embedded_hal::delay::DelayNs;
 use embedded_hal::spi::SpiDevice;
 use embedded_sdmmc::{
-    Mode, SdCard, ShortFileName, TimeSource, Timestamp, VolumeIdx, VolumeManager,
+    LfnBuffer, Mode, SdCard, ShortFileName, TimeSource, Timestamp, VolumeIdx, VolumeManager,
 };
 
 // =============================================================================
@@ -21,8 +21,10 @@ use embedded_sdmmc::{
 /// 目录条目信息
 #[derive(Debug, Clone)]
 pub struct DirEntryInfo {
-    /// 文件名
+    /// 长文件名（用于显示）
     pub name: String,
+    /// 短文件名（用于文件系统操作，如 open_dir）
+    pub short_name: String,
     /// 是否为目录
     pub is_dir: bool,
     /// 文件大小（字节）
@@ -212,13 +214,19 @@ where
     fn list_dir(&mut self, path: &str) -> Result<Vec<DirEntryInfo>, SdError> {
         let dir = self.navigate_to_dir(path)?;
         let mut entries = Vec::new();
+        let mut lfn_storage = [0u8; 256];
+        let mut lfn_buffer = LfnBuffer::new(&mut lfn_storage);
 
         self.volume_mgr
-            .iterate_dir(dir, |entry| {
-                let name = short_name_to_string(&entry.name);
-                if name != "." && name != ".." {
+            .iterate_dir_lfn(dir, &mut lfn_buffer, |entry, lfn| {
+                let short_name = short_name_to_string(&entry.name);
+                let name = lfn
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| short_name.clone());
+                if short_name != "." && short_name != ".." {
                     entries.push(DirEntryInfo {
                         name,
+                        short_name,
                         is_dir: entry.attributes.is_directory(),
                         size: entry.size,
                     });

@@ -157,13 +157,14 @@ async fn main(spawner: Spawner) -> ! {
 
     use mipidsi::Builder;
     use mipidsi::models::ST7789;
-    use mipidsi::options::ColorOrder;
+    use mipidsi::options::{ColorOrder, Orientation, Rotation};
     use embedded_graphics::pixelcolor::Rgb565;
     use embedded_graphics::draw_target::DrawTarget;
     use embedded_graphics::prelude::RgbColor;
 
     let mut display = Builder::new(ST7789, di)
         .color_order(ColorOrder::Bgr)
+        .orientation(Orientation::new().rotate(Rotation::Deg270))
         .display_offset(35, 0)
         .display_size(170, 320)
         .init(&mut esp_hal::delay::Delay::new())

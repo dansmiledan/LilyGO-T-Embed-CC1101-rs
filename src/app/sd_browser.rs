@@ -1,6 +1,7 @@
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::Cell;
 
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -18,8 +19,10 @@ use crate::sd_card::{list_directory, DirEntryInfo, format_size};
 
 #[derive(Debug)]
 pub struct SdBrowserNode {
-    /// 当前目录路径（空字符串表示根目录）
+    /// 当前目录路径（短文件名路径，用于文件系统操作）
     current_path: String,
+    /// 路径栈，保存每一级目录的显示名（长文件名），用于标题栏
+    path_stack: Vec<String>,
     /// 缓存的目录条目
     entries: Vec<DirEntryInfo>,
     /// 当前选中项索引
@@ -28,16 +31,20 @@ pub struct SdBrowserNode {
     error_msg: Option<String>,
     /// 滚动偏移（用于长列表）
     scroll_offset: usize,
+    /// 缓存上次渲染时计算出的可见行数，供事件处理使用
+    cached_visible_rows: Cell<usize>,
 }
 
 impl SdBrowserNode {
     pub fn new() -> Self {
         Self {
             current_path: String::new(),
+            path_stack: Vec::new(),
             entries: Vec::new(),
             selected: 0,
             error_msg: None,
             scroll_offset: 0,
+            cached_visible_rows: Cell::new(5),
         }
     }
 
@@ -65,6 +72,8 @@ impl SdBrowserNode {
             }
         }
     }
+
+
 
     /// 计算可见区域能显示的行数
     fn visible_rows(&self, area_height: u16) -> usize {
@@ -99,23 +108,26 @@ impl UiNode for SdBrowserNode {
                 if !self.entries.is_empty() && self.selected < self.entries.len() - 1 {
                     self.selected += 1;
                 }
-                self.update_scroll(10);
+                let visible_rows = self.cached_visible_rows.get();
+                self.update_scroll(visible_rows);
             }
             EncoderEvent::CounterClockwise => {
                 if self.selected > 0 {
                     self.selected -= 1;
                 }
-                self.update_scroll(10);
+                let visible_rows = self.cached_visible_rows.get();
+                self.update_scroll(visible_rows);
             }
             EncoderEvent::ConfirmReleased => {
                 if let Some(entry) = self.entries.get(self.selected) {
                     if entry.is_dir {
-                        // 进入子目录
+                        // 进入子目录：路径用短文件名，显示名用长文件名
                         if self.current_path.is_empty() {
-                            self.current_path = entry.name.clone();
+                            self.current_path = entry.short_name.clone();
                         } else {
-                            self.current_path = format!("{}/{}", self.current_path, entry.name);
+                            self.current_path = format!("{}/{}", self.current_path, entry.short_name);
                         }
+                        self.path_stack.push(entry.name.clone());
                         self.refresh();
                     } else {
                         // 选中文件，暂不做特殊操作（未来可扩展为查看文件内容）
@@ -133,6 +145,7 @@ impl UiNode for SdBrowserNode {
                     } else {
                         self.current_path.clear();
                     }
+                    self.path_stack.pop();
                     self.refresh();
                 }
             }
@@ -144,6 +157,7 @@ impl UiNode for SdBrowserNode {
     fn render(&self, frame: &mut Frame<'_>, _area: Rect) {
         let area = frame.area();
         let visible_rows = self.visible_rows(area.height);
+        self.cached_visible_rows.set(visible_rows);
 
         let chunks = Layout::default()
             .constraints([
@@ -159,7 +173,7 @@ impl UiNode for SdBrowserNode {
         } else {
             &self.current_path
         };
-        let title = Paragraph::new(alloc::format!("SD Card - {}", path_display))
+        let title = Paragraph::new(alloc::format!("SD Card - {}",path_display))
             .block(
                 Block::bordered()
                     .border_type(BorderType::Rounded)
@@ -185,15 +199,20 @@ impl UiNode for SdBrowserNode {
             let end_idx = (self.scroll_offset + visible_rows).min(self.entries.len());
             let visible_entries = &self.entries[self.scroll_offset..end_idx];
 
+            // 根据列表区域宽度动态计算文件名显示宽度
+            let inner_width = chunks[1].width.saturating_sub(2) as usize;
+            let dir_name_width = inner_width.saturating_sub(3); // '[' '/' ']'
+            let file_name_width = inner_width.saturating_sub(10); // 预留空格 + 大小
+
             let list_items: Vec<ListItem> = visible_entries
                 .iter()
                 .enumerate()
                 .map(|(i, entry)| {
                     let actual_idx = self.scroll_offset + i;
                     let label = if entry.is_dir {
-                        alloc::format!("[{:14}/]", entry.name)
+                        alloc::format!("[{:<dir_width$}/]", entry.name, dir_width = dir_name_width)
                     } else {
-                        alloc::format!("{:16} {}", entry.name, format_size(entry.size))
+                        alloc::format!("{:<name_width$} {}", entry.name, format_size(entry.size), name_width = file_name_width)
                     };
 
                     let style = if actual_idx == self.selected {

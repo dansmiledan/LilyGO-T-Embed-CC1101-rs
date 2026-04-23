@@ -39,7 +39,7 @@ ratatui = { version = "0.30", default-features = false }
 
 # SD卡支持
 embedded-hal = "1.0"
-embedded-sdmmc = { version = "0.8", default-features = false }
+embedded-sdmmc = { version = "0.9", default-features = false }
 
 # BLE HID dependencies
 trouble-host = { version = "0.6.0", features = [
